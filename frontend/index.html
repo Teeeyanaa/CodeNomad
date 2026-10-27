@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f2eee5" />
+    <title>CodeNomad / Testnet Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="CodeNomad home"><span class="mark">C</span> CodeNomad</a>
+      <div class="network"><span class="pulse"></span> Stellar testnet <span class="divider"></span> <span id="clock">--:--:--</span></div>
+      <button class="wallet-button" id="wallet-button" type="button"><span class="wallet-dot"></span> Connect wallet</button>
+    </header>
+
+    <main>
+      <section class="intro reveal">
+        <div>
+          <p class="eyebrow">Operator console / 01</p>
+          <h1>Markets with<br /><em>receipts.</em></h1>
+          <p class="lede">A clear window into OracleDesk markets, treasury health, and the reasoning trail behind every agent action.</p>
+        </div>
+        <div class="intro-meta">
+          <span class="live-badge"><span class="pulse"></span> Live network</span>
+          <a href="https://stellar.expert/explorer/testnet" target="_blank" rel="noreferrer">Open explorer <span aria-hidden="true">↗</span></a>
+        </div>
+      </section>
+
+      <section class="stats reveal" aria-label="Network summary">
+        <article class="stat"><span class="stat-label">Markets indexed</span><strong>12</strong><span class="trend up">+3 this week</span></article>
+        <article class="stat"><span class="stat-label">Capital deployed</span><strong>$8,420<span class="unit">.00</span></strong><span class="trend">USDC · 7 decimals</span></article>
+        <article class="stat"><span class="stat-label">Traces verified</span><strong>98.7<span class="unit">%</span></strong><span class="trend up">+1.4% this month</span></article>
+        <article class="stat status-stat"><span class="stat-label">System status</span><strong><span class="status-dot"></span>Operational</strong><span class="trend">Last checked just now</span></article>
+      </section>
+
+      <section class="workspace reveal">
+        <div class="section-heading"><div><p class="eyebrow">Active markets</p><h2>Watch the pulse</h2></div><button class="text-button" type="button" id="refresh-button">Refresh data <span aria-hidden="true">↻</span></button></div>
+        <div class="market-layout">
+          <div class="market-list">
+            <button class="market-row selected" type="button" data-market="Election turnout over 70%">
+              <span class="market-icon coral">↑</span><span class="market-copy"><strong>Election turnout over 70%</strong><small>Closes in 4d 12h · #0012</small></span><span class="market-price"><strong>64¢</strong><small>YES <span class="positive">+4.2%</span></small></span>
+            </button>
+            <button class="market-row" type="button" data-market="BTC above $120k by June">
+              <span class="market-icon green">↗</span><span class="market-copy"><strong>BTC above $120k by June</strong><small>Closes in 19d 06h · #0011</small></span><span class="market-price"><strong>38¢</strong><small>YES <span class="negative">−1.8%</span></small></span>
+            </button>
+            <button class="market-row" type="button" data-market="Fed holds rates in May">
+              <span class="market-icon gold">=</span><span class="market-copy"><strong>Fed holds rates in May</strong><small>Closes in 2d 03h · #0010</small></span><span class="market-price"><strong>72¢</strong><small>YES <span class="positive">+0.6%</span></small></span>
+            </button>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-top"><div><span class="chart-kicker">Selected market</span><h3 id="selected-market">Election turnout over 70%</h3></div><span class="chart-change">+4.2%</span></div>
+            <div class="chart"><div class="grid-line one"></div><div class="grid-line two"></div><div class="grid-line three"></div><svg viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="Market price rising from 48 to 64 cents"><defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#e56b52" stop-opacity=".24" /><stop offset="1" stop-color="#e56b52" stop-opacity="0" /></linearGradient></defs><path class="chart-area" d="M0 177 C45 171 55 145 92 157 S140 128 176 142 S222 121 260 131 S305 96 341 111 S390 92 422 104 S467 75 502 83 S550 59 580 66 S615 45 640 51 V220 H0 Z" /><path class="chart-line" d="M0 177 C45 171 55 145 92 157 S140 128 176 142 S222 121 260 131 S305 96 341 111 S390 92 422 104 S467 75 502 83 S550 59 580 66 S615 45 640 51" /></svg><div class="axis"><span>10:00</span><span>14:00</span><span>18:00</span><span>22:00</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="bottom-grid reveal"><article class="panel trace-panel"><div class="section-heading compact"><div><p class="eyebrow">Reasoning registry</p><h2>Latest traces</h2></div><span class="verified">● Verified on-chain</span></div><div class="trace"><span class="trace-number">01</span><div><strong>Trader / buy YES</strong><small>Election turnout over 70% · 2 min ago</small></div><span class="hash">0x8c…b41</span></div><div class="trace"><span class="trace-number">02</span><div><strong>Market maker / seed</strong><small>Fed holds rates in May · 18 min ago</small></div><span class="hash">0xe2…91f</span></div><div class="trace"><span class="trace-number">03</span><div><strong>Trader / sell NO</strong><small>BTC above $120k by June · 41 min ago</small></div><span class="hash">0x31…d09</span></div></article><article class="panel contract-panel"><div class="section-heading compact"><div><p class="eyebrow">Connected contracts</p><h2>Testnet wiring</h2></div><span class="network-tag">TESTNET</span></div><div class="contract-row"><span>Market core</span><a id="market-link" target="_blank" rel="noreferrer">CC4M…SRK2O ↗</a></div><div class="contract-row"><span>Reasoning registry</span><a id="registry-link" target="_blank" rel="noreferrer">CAFE…CH6M ↗</a></div><div class="contract-row"><span>x402 trace API</span><span id="api-status" class="api-status"><span class="status-dot"></span>Checking</span></div></article></section>
+    </main>
+    <footer><span>ORACLE<span class="footer-accent">DESK</span> · AUTONOMOUS MARKETS</span><span>Built on Stellar / Soroban</span></footer>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

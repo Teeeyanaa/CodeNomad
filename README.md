@@ -1,9 +1,9 @@
-# OracleDesk
+# CodeNomad
 
 > Autonomous prediction market creation, agent-driven trading, and
 > tamper-evident on-chain reasoning — natively on Stellar/Soroban.
 
-OracleDesk is an autonomous prediction-market system: a Market Maker agent
+CodeNomad is an autonomous prediction-market system: a Market Maker agent
 seeds markets from signals it observes, a Trader agent trades mispricings
 against a fair-value estimate, and every decision either agent makes is
 hashed and recorded on-chain *before* it acts — so a subscriber can pay
@@ -12,6 +12,16 @@ reasoning behind a trade and check it against the on-chain hash, rather
 than trusting the agent's word for it.
 
 ---
+
+## Project Layout
+
+The repository is split into two independently runnable parts:
+
+- `frontend/` — the browser console (`npm start`, served at `http://localhost:4173`)
+- `oracledesk-stellar/` — Soroban contracts, agents, generated bindings, and the x402 API
+
+The frontend reads the checked-in testnet deployment addresses and can point its
+optional x402 health check at `http://localhost:3000` (the backend's default).
 
 ## System Architecture
 
@@ -296,4 +306,4 @@ authentic.
 
 ---
 
-*OracleDesk — ported to Stellar/Soroban.*
+*CodeNomad — ported to Stellar/Soroban.*

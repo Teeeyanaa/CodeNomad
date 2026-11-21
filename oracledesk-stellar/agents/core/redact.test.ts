@@ -59,3 +59,27 @@ test("redaction is idempotent so re-serialized traces stay clean", () => {
   assert.deepEqual(twice, once);
   assert.equal(JSON.stringify(twice).includes("\"k\""), false);
 });
+
+// Signal adapter provenance: normalized observations must carry a source ID
+// and evidence hash, and any credentials embedded in provider payloads must be
+// redacted before they reach traces or logs.
+test("redacts credentials embedded in provider observation payloads", () => {
+  const secretSeed = `S${"D".repeat(55)}`;
+  const observation = {
+    sourceId: "provider-alpha",
+    evidenceHash: "0xabc123",
+    value: 42,
+    timestamp: 1_700_000_000_000,
+    raw: {
+      apiKey: "provider-key",
+      authorization: "Bearer provider-token",
+      signer: secretSeed,
+    },
+  };
+  const serialized = JSON.stringify(redact(observation));
+  assert.ok(!serialized.includes("provider-key"), "api key leaked");
+  assert.ok(!serialized.includes("provider-token"), "bearer token leaked");
+  assert.ok(!serialized.includes(secretSeed), "secret seed leaked");
+  assert.ok(serialized.includes("provider-alpha"), "source id should remain");
+  assert.ok(serialized.includes("0xabc123"), "evidence hash should remain");
+});

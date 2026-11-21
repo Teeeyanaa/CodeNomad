@@ -157,3 +157,139 @@ describe("trader chaos: ambiguous transaction outcomes", () => {
     expect(submits).toBe(1);
   });
 });
+
+describe("trader calibrated fair-value: uncertainty bounds and edge gating", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "trader-calib-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function makeAgent(overrides: Record<string, unknown> = {}) {
+    const ledger = makeLedger(dir);
+    let submits = 0;
+    const agent = new TraderAgent({
+      ledger,
+      submit: async (): Promise<SubmitResult> => {
+        submits += 1;
+        return { hash: `tx-${submits}` };
+      },
+      read: async () => ({ status: "success" }),
+      ...overrides,
+    });
+    return { agent, ledger, submits: () => submits };
+  }
+
+  it("rejects stale fair-value inputs before proposing a trade", async () => {
+    const { agent, submits } = makeAgent({
+      now: () => 1_000_000,
+      maxFairValueAgeMs: 5_000,
+      minEdgeBps: 10,
+      feeBps: 5,
+    });
+    const estimate = {
+      fairValue: 1.0,
+      confidence: 0.9,
+      observedAt: 1_000_000 - 60_000, // 60s old, well past 5s freshness window
+    };
+    const decision = await agent.proposeTrade({
+      id: "intent-stale",
+      action: "swap",
+      amount: "10",
+      marketPrice: 0.9,
+      estimate,
+    });
+    expect(decision.proposed).toBe(false);
+    expect(decision.reason).toMatch(/stale/i);
+    expect(submits()).toBe(0);
+  });
+
+  it("treats zero confidence as maximum uncertainty and blocks the trade", async () => {
+    const { agent, submits } = makeAgent({
+      now: () => 1_000_000,
+      maxFairValueAgeMs: 5_000,
+      minEdgeBps: 10,
+      feeBps: 5,
+    });
+    const decision = await agent.proposeTrade({
+      id: "intent-lowconf",
+      action: "swap",
+      amount: "10",
+      marketPrice: 0.5,
+      estimate: { fairValue: 1.0, confidence: 0, observedAt: 1_000_000 },
+    });
+    expect(decision.proposed).toBe(false);
+    expect(decision.reason).toMatch(/confidence|uncertainty/i);
+    expect(submits()).toBe(0);
+  });
+
+  it("treats full confidence as zero uncertainty and allows a clear edge", async () => {
+    const { agent } = makeAgent({
+      now: () => 1_000_000,
+      maxFairValueAgeMs: 5_000,
+      minEdgeBps: 10,
+      feeBps: 5,
+    });
+    const decision = await agent.proposeTrade({
+      id: "intent-highconf",
+      action: "swap",
+      amount: "10",
+      marketPrice: 0.5,
+      estimate: { fairValue: 1.0, confidence: 1, observedAt: 1_000_000 },
+    });
+    expect(decision.proposed).toBe(true);
+    expect(decision.edgeBps).toBeGreaterThan(10);
+  });
+
+  it("requires edge after uncertainty and fees, not just raw edge", async () => {
+    const { agent } = makeAgent({
+      now: () => 1_000_000,
+      maxFairValueAgeMs: 5_000,
+      minEdgeBps: 50,
+      feeBps: 30,
+    });
+    // Raw edge is 100bps but confidence 0.5 widens the uncertainty band so the
+    // conservative edge after uncertainty and fees falls below the minimum.
+    const decision = await agent.proposeTrade({
+      id: "intent-thin",
+      action: "swap",
+      amount: "10",
+      marketPrice: 0.99,
+      estimate: { fairValue: 1.0, confidence: 0.5, observedAt: 1_000_000 },
+    });
+    expect(decision.proposed).toBe(false);
+    expect(decision.reason).toMatch(/edge/i);
+  });
+
+  it("clamps probability boundaries at 0 and 1", async () => {
+    const { agent } = makeAgent({
+      now: () => 1_000_000,
+      maxFairValueAgeMs: 5_000,
+      minEdgeBps: 10,
+      feeBps: 5,
+    });
+    const low = await agent.proposeTrade({
+      id: "intent-low",
+      action: "swap",
+      amount: "10",
+      marketPrice: 0.5,
+      estimate: { fairValue: -0.2, confidence: 1, observedAt: 1_000_000 },
+    });
+    expect(low.fairValue).toBe(0);
+    expect(low.proposed).toBe(false);
+
+    const high = await agent.proposeTrade({
+      id: "intent-high",
+      action: "swap",
+      amount: "10",
+      marketPrice: 0.5,
+      estimate: { fairValue: 1.7, confidence: 1, observedAt: 1_000_000 },
+    });
+    expect(high.fairValue).toBe(1);
+    expect(high.proposed).toBe(true);
+  });
+});

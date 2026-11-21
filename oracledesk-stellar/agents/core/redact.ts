@@ -73,3 +73,137 @@ export function redact<T>(value: T): T {
 export function serializeTrace(value: unknown): string {
   return JSON.stringify(redact(value));
 }
+
+/**
+ * Signal adapter: normalize provider observations into a canonical record with
+ * provenance (source ID + evidence hash) and freshness checks.
+ *
+ * Operational outcomes (all rejections are surfaced as thrown errors so the
+ * caller can log/alert deterministically):
+ * - Malformed observations (missing/invalid value, timestamp, source ID or
+ *   evidence hash) are rejected.
+ * - Future timestamps beyond `maxClockSkewMs` are rejected.
+ * - Stale timestamps older than `maxAgeMs` are rejected.
+ * - Duplicate observations (same source ID + evidence hash) are rejected.
+ * - Credentials embedded in source IDs / evidence hashes are redacted before
+ *   they are stored or returned.
+ *
+ * Compatibility: `normalizeObservation` is pure and deterministic; it never
+ * performs I/O and never trades. Callers keep the safe dry-run default.
+ */
+export interface RawObservation {
+  value?: unknown;
+  timestamp?: unknown;
+  sourceId?: unknown;
+  evidenceHash?: unknown;
+}
+
+export interface NormalizedObservation {
+  value: number;
+  timestamp: number;
+  sourceId: string;
+  evidenceHash: string;
+}
+
+export interface FreshnessOptions {
+  /** Maximum allowed age of an observation in milliseconds. */
+  maxAgeMs: number;
+  /** Allowed clock skew into the future in milliseconds. Defaults to 0. */
+  maxClockSkewMs?: number;
+  /** Reference "now" in epoch milliseconds. Defaults to Date.now(). */
+  now?: number;
+}
+
+const EVIDENCE_HASH = /^[A-Za-z0-9._:-]{8,}$/;
+const SOURCE_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export class ObservationError extends Error {
+  constructor(
+    readonly reason:
+      | "malformed"
+      | "future"
+      | "stale"
+      | "duplicate",
+    message: string,
+  ) {
+    super(message);
+    this.name = "ObservationError";
+  }
+}
+
+function parseTimestamp(raw: unknown): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const asNumber = Number(raw);
+    if (Number.isFinite(asNumber)) return asNumber;
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  throw new ObservationError("malformed", "observation timestamp is invalid");
+}
+
+function parseValue(raw: unknown): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  throw new ObservationError("malformed", "observation value is invalid");
+}
+
+function parseString(raw: unknown, field: string, pattern: RegExp): string {
+  if (typeof raw !== "string" || !pattern.test(raw)) {
+    throw new ObservationError("malformed", `observation ${field} is invalid`);
+  }
+  return redactString(raw);
+}
+
+/**
+ * Normalize a single provider observation, enforcing provenance and freshness.
+ * Throws `ObservationError` on any rejection.
+ */
+export function normalizeObservation(
+  raw: RawObservation,
+  options: FreshnessOptions,
+): NormalizedObservation {
+  if (!raw || typeof raw !== "object") {
+    throw new ObservationError("malformed", "observation is not an object");
+  }
+  const value = parseValue(raw.value);
+  const timestamp = parseTimestamp(raw.timestamp);
+  const sourceId = parseString(raw.sourceId, "sourceId", SOURCE_ID);
+  const evidenceHash = parseString(raw.evidenceHash, "evidenceHash", EVIDENCE_HASH);
+
+  const now = options.now ?? Date.now();
+  const skew = options.maxClockSkewMs ?? 0;
+  if (timestamp > now + skew) {
+    throw new ObservationError("future", "observation timestamp is in the future");
+  }
+  if (now - timestamp > options.maxAgeMs) {
+    throw new ObservationError("stale", "observation is older than the freshness window");
+  }
+
+  return { value, timestamp, sourceId, evidenceHash };
+}
+
+/**
+ * Normalize a batch of observations, rejecting duplicates (same source ID and
+ * evidence hash) within the batch. Returns only accepted observations.
+ */
+export function normalizeObservations(
+  raws: RawObservation[],
+  options: FreshnessOptions,
+): NormalizedObservation[] {
+  const seen = new Set<string>();
+  const accepted: NormalizedObservation[] = [];
+  for (const raw of raws) {
+    const normalized = normalizeObservation(raw, options);
+    const key = `${normalized.sourceId}\u0000${normalized.evidenceHash}`;
+    if (seen.has(key)) {
+      throw new ObservationError("duplicate", "duplicate observation detected");
+    }
+    seen.add(key);
+    accepted.push(normalized);
+  }
+  return accepted;
+}

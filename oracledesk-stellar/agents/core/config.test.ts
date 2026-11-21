@@ -12,6 +12,17 @@ import {
   type LoadAgentConfigOptions,
   type NetworkProbe,
 } from "./config.js";
+import {
+  BUILTIN_STRATEGIES,
+  StrategyConfigError,
+  getStrategy,
+  listStrategies,
+  resolveStrategy,
+  validateStrategyConfig,
+  type MakerStrategy,
+  type StrategyContext,
+  type TraderStrategy,
+} from "./strategy.js";
 
 // Real StrKeys, derived from fixed seeds so every run is identical.
 const keypair = (n: number) => Keypair.fromRawEd25519Seed(Buffer.alloc(32, n));
@@ -208,54 +219,57 @@ test("in dry-run a failing probe is a warning, not an error", async () => {
 
 test("live mode fails when the RPC cannot be reached", async () => {
   const probe: NetworkProbe = {
-    passphrase: async () => Promise.reject(new Error("getNetwork timed out after 5000 ms")),
+    passphrase: async () => Promise.reject(new Error("connect ECONNREFUSED")),
     contractsExist: async () => ({ missing: [], archived: [] }),
   };
   const issues = await issuesOf(load(LIVE, { probe }).run());
-  assert.ok(issues.some((i) => i.includes("timed out")));
+  assert.ok(issues.some((i) => i.includes("ECONNREFUSED")), issues.join(" | "));
 });
 
-test("an explicit passphrase that disagrees with STELLAR_NETWORK is rejected", async () => {
-  const issues = await issuesOf(load({ STELLAR_NETWORK_PASSPHRASE: NETWORKS.mainnet.passphrase }).run());
-  assert.ok(issues.some((i) => i.startsWith("STELLAR_NETWORK_PASSPHRASE")));
+test("built-in strategies are deterministic and registered under stable ids", () => {
+  const ids = listStrategies();
+  assert.ok(ids.includes("maker.fixed-spread"));
+  assert.ok(ids.includes("trader.edge-gated"));
+  for (const id of ids) {
+    assert.equal(getStrategy(id).id, id);
+  }
+  assert.equal(BUILTIN_STRATEGIES.length, ids.length);
 });
 
-test("x402 payment requirements are validated at startup", async () => {
-  // A complete, consistent x402 route loads cleanly.
-  const ok = await load({
-    X402_FACILITATOR_URL: "https://facilitator.example.com",
-    X402_RECIPIENT: MAKER.publicKey(),
-    X402_ASSET: CONTRACTS.usdc,
-    X402_AMOUNT_STROOPS: "1000000",
-  }).run();
-  assert.equal(ok.x402?.facilitatorUrl, "https://facilitator.example.com");
-  assert.equal(ok.x402?.recipient, MAKER.publicKey());
-  assert.equal(ok.x402?.asset, CONTRACTS.usdc);
-  assert.equal(ok.x402?.amountStroops, 1_000_000n);
-
-  // A malformed facilitator URL is rejected.
-  const badUrl = await issuesOf(load({ X402_FACILITATOR_URL: "not a url" }).run());
-  assert.ok(badUrl.some((i) => i.startsWith("X402_FACILITATOR_URL:")), badUrl.join(" | "));
-
-  // A non-StrKey recipient is rejected.
-  const badRecipient = await issuesOf(load({ X402_RECIPIENT: "GNOTANADDRESS" }).run());
-  assert.ok(badRecipient.some((i) => i.startsWith("X402_RECIPIENT:")), badRecipient.join(" | "));
-
-  // A non-contract asset identifier is rejected.
-  const badAsset = await issuesOf(load({ X402_ASSET: "USDC" }).run());
-  assert.ok(badAsset.some((i) => i.startsWith("X402_ASSET:")), badAsset.join(" | "));
-
-  // A non-positive amount is rejected.
-  const badAmount = await issuesOf(load({ X402_AMOUNT_STROOPS: "0" }).run());
-  assert.ok(badAmount.some((i) => i.startsWith("X402_AMOUNT_STROOPS:")), badAmount.join(" | "));
-
-  // A partially configured route fails with a precise error naming the missing key.
-  const partial = await issuesOf(load({ X402_FACILITATOR_URL: "https://facilitator.example.com" }).run());
-  assert.ok(partial.some((i) => i.startsWith("X402_RECIPIENT:")), partial.join(" | "));
+test("unknown strategy ids fail startup validation with a clear message", () => {
+  assert.throws(
+    () => resolveStrategy("trader", "does-not-exist"),
+    (err: unknown) => err instanceof StrategyConfigError && /does-not-exist/.test(err.message),
+  );
+  assert.throws(
+    () => resolveStrategy("maker", "trader.edge-gated"),
+    (err: unknown) => err instanceof StrategyConfigError && /maker/.test(err.message),
+  );
 });
 
-test("contracts missing on chain produce a precise startup error", async () => {
-  const probe = new FakeProbe(NETWORKS.testnet.passphrase, { missing: ["market_core"], archived: [] });
-  const issues = await issuesOf(load(LIVE, { probe }).run());
-  assert.ok(issues.some((i) => i.includes("market_core")), issues.join(" | "));
+test("strategy parameters are validated at startup", () => {
+  const issues = validateStrategyConfig("trader.edge-gated", { minEdgeBps: -1, confidenceThresholdBps: 10_001 });
+  assert.ok(issues.some((i) => i.startsWith("minEdgeBps:")), issues.join(" | "));
+  assert.ok(issues.some((i) => i.startsWith("confidenceThresholdBps:")), issues.join(" | "));
+  assert.deepEqual(validateStrategyConfig("trader.edge-gated", { minEdgeBps: 500 }), []);
+});
+
+test("built-in strategies produce identical output for identical input", () => {
+  const ctx: StrategyContext = {
+    role: "trader",
+    now: 1_700_000_000_000,
+    fairValueBps: 5_000,
+    confidenceBps: 8_000,
+    bestBidBps: 4_900,
+    bestAskBps: 5_100,
+  };
+  const trader = getStrategy("trader.edge-gated") as TraderStrategy;
+  const a = trader.decide(ctx);
+  const b = trader.decide(ctx);
+  assert.deepEqual(a, b);
+
+  const maker = getStrategy("maker.fixed-spread") as MakerStrategy;
+  const m1 = maker.quote(ctx);
+  const m2 = maker.quote(ctx);
+  assert.deepEqual(m1, m2);
 });

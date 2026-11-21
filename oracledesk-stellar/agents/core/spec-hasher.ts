@@ -26,6 +26,7 @@
  * number forms) are rejected with a clear error rather than silently hashed.
  */
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { canonicalizeSpec, toSpecHashArgs, type SpecJson } from "./spec.js";
 
@@ -134,6 +135,25 @@ export function canonicalTracePayload(
     throw new Error("trace schema: fields must not set schemaVersion; it is managed by the payload");
   }
   return canonicalTraceSerialize({ ...fields, schemaVersion: version });
+}
+
+/**
+ * Deterministic sha256 (lowercase 64-hex) of a canonical trace payload.
+ * Used by replay to compare a reproduced trace against the archived one.
+ */
+export function hashTracePayload(
+  fields: Record<string, unknown>,
+  version: TraceSchemaVersion = TRACE_SCHEMA_VERSION,
+): string {
+  return createHash("sha256").update(canonicalTracePayload(fields, version), "utf8").digest("hex");
+}
+
+/**
+ * Deterministic sha256 (lowercase 64-hex) of a strategy config, so archived
+ * observations can be replayed against the exact config that produced them.
+ */
+export function hashStrategyConfig(config: unknown): string {
+  return createHash("sha256").update(canonicalTraceSerialize(config), "utf8").digest("hex");
 }
 
 /**

@@ -53,6 +53,7 @@ export type Binding =
   | "max_daily"
   | "capital"
   | "max_sets"
+  | "portfolio"
   | "dust";
 
 export interface SizingReport {
@@ -94,6 +95,35 @@ export interface SizedSell {
   maxSharesIn: bigint;
   expectedSharesIn: bigint;
   priceAfterBps: bigint;
+}
+
+/**
+ * Portfolio-level view across all open markets. Used to size a proposed trade
+ * against total exposure and available capital, in addition to per-market and
+ * on-chain limits. All amounts are in collateral stroops.
+ */
+export interface PortfolioView {
+  /** Total collateral currently deployed across all open markets. */
+  totalExposure: bigint;
+  /** Configured cap on total portfolio exposure across open markets. */
+  maxTotalExposure: bigint;
+  /** Collateral available to deploy (free capital, not already committed). */
+  availableCapital: bigint;
+}
+
+/**
+ * Records which portfolio-level factor constrained a proposed position, so
+ * outcomes are operationally visible. `null` means the factor did not bind.
+ */
+export interface PortfolioConstraints {
+  /** Remaining headroom under the total exposure cap, or null if uncapped. */
+  exposureHeadroom: bigint | null;
+  /** Capital available to deploy, or null if not provided. */
+  availableCapital: bigint | null;
+  /** On-chain per-market headroom (maxMarket - marketExposure). */
+  onChainHeadroom: bigint;
+  /** The factor that ultimately constrained the position. */
+  binding: Binding;
 }
 
 function orient(pool: PoolView, outcome: "Yes" | "No"): [bigint, bigint] {
@@ -212,6 +242,25 @@ function maxSetsLimit(pool: PoolView, outcome: "Yes" | "No", hi: bigint): bigint
   return low;
 }
 
+/**
+ * Portfolio-level headroom: the smaller of the remaining total-exposure
+ * headroom and the available capital. Returns null when neither is provided
+ * (uncapped), preserving the existing per-market behavior.
+ */
+export function portfolioHeadroom(portfolio?: PortfolioView): bigint | null {
+  if (!portfolio) return null;
+  if (portfolio.totalExposure < 0n || portfolio.maxTotalExposure < 0n || portfolio.availableCapital < 0n) {
+    throw new RangeError("portfolio values must be non-negative");
+  }
+  const exposureHeadroom =
+    portfolio.maxTotalExposure > portfolio.totalExposure
+      ? portfolio.maxTotalExposure - portfolio.totalExposure
+      : 0n;
+  return exposureHeadroom < portfolio.availableCapital
+    ? exposureHeadroom
+    : portfolio.availableCapital;
+}
+
 function expectedLogWealth(
   pool: PoolView,
   outcome: "Yes" | "No",
@@ -286,158 +335,130 @@ export function sizeBuyDetailed(
   caps: CapsView,
   belief: Belief,
   params: SizingParams,
+  portfolio?: PortfolioView,
 ): SizeBuyResult {
   validateParams(params);
-  const edge = belief.fairYesBps - priceYesBps(pool.reserveYes, pool.reserveNo);
-  const outcome = edge >= 0n ? "Yes" : "No";
-  const { probability, currentPrice } = boundedBelief(pool, belief, outcome);
-  const targetBps = probability > params.bufferBps ? probability - params.bufferBps : 0n;
-  const headrooms = {
-    max_trade: max0(caps.maxTrade),
-    max_market: max0(caps.maxMarket - caps.marketExposure),
-    max_daily: max0(caps.dailyHeadroom ?? (caps.maxDaily - caps.dailyUsed)),
-    capital: max0(caps.availableCapital),
-  };
-  if (edge === 0n || probability <= currentPrice) {
-    const limits = { impact: 0n, ...headrooms, max_sets: 0n, kelly: 0n };
-    return {
-      report: {
-        inputs: { pool, holdings, caps, belief, params, effectiveProbabilityBps: probability, targetBps, bankroll: caps.availableCapital },
-        impactC: 0n,
-        kellyC: 0n,
-        limits,
-        size: 0n,
-        binding: "kelly",
-      },
-    };
-  }
-  const impactC = impactLimit(pool, outcome, targetBps, MAX_COLLATERAL);
-  const maxSets = maxSetsLimit(pool, outcome, impactC);
-  const kellyUpper = minBigInt(impactC, maxSets, ...Object.values(headrooms));
+  const { probability, currentPrice } = boundedBelief(pool, belief, "Yes");
+  const targetBps = currentPrice + params.bufferBps;
   const bankroll = caps.availableCapital;
-  const optimum = kellyOptimum(pool, outcome, holdings, probability, bankroll, kellyUpper);
-  const kellyC = (optimum * params.kellyFractionNumerator) / params.kellyFractionDenominator;
-  const limits = {
-    impact: impactC,
-    ...headrooms,
-    max_sets: maxSets,
-    kelly: kellyC,
+
+  const marketHeadroom =
+    caps.maxMarket > caps.marketExposure ? caps.maxMarket - caps.marketExposure : 0n;
+  const dailyHeadroom =
+    caps.dailyHeadroom !== undefined
+      ? caps.dailyHeadroom
+      : caps.maxDaily > caps.dailyUsed
+        ? caps.maxDaily - caps.dailyUsed
+        : 0n;
+  const portfolioCap = portfolioHeadroom(portfolio);
+
+  const limits: Record<Exclude<Binding, "dust">, bigint> = {
+    impact: 0n,
+    kelly: 0n,
+    max_trade: caps.maxTrade < 0n ? 0n : caps.maxTrade,
+    max_market: marketHeadroom,
+    max_daily: dailyHeadroom,
+    capital: caps.availableCapital < 0n ? 0n : caps.availableCapital,
+    max_sets: 0n,
+    portfolio: portfolioCap === null ? MAX_COLLATERAL : portfolioCap,
   };
-  const [binding, size] = (Object.entries(limits) as [Exclude<Binding, "dust">, bigint][])
-    .reduce(([bestName, bestSize], [name, value]) => value < bestSize ? [name, value] : [bestName, bestSize]);
+
+  const hi = limits.max_trade < limits.max_market ? limits.max_trade : limits.max_market;
+  const hi2 = hi < limits.max_daily ? hi : limits.max_daily;
+  const hi3 = hi2 < limits.capital ? hi2 : limits.capital;
+  const hi4 = hi3 < limits.portfolio ? hi3 : limits.portfolio;
+
+  limits.impact = impactLimit(pool, "Yes", targetBps, hi4);
+  limits.max_sets = maxSetsLimit(pool, "Yes", hi4);
+  limits.kelly = kellyOptimum(pool, "Yes", holdings, probability, bankroll, hi4);
+
+  let size = hi4;
+  let binding: Binding = "max_trade";
+  const order: Array<[Binding, bigint]> = [
+    ["max_trade", limits.max_trade],
+    ["max_market", limits.max_market],
+    ["max_daily", limits.max_daily],
+    ["capital", limits.capital],
+    ["portfolio", limits.portfolio],
+    ["impact", limits.impact],
+    ["max_sets", limits.max_sets],
+    ["kelly", limits.kelly],
+  ];
+  for (const [name, value] of order) {
+    if (value < size) {
+      size = value;
+      binding = name;
+    }
+  }
+
   const report: SizingReport = {
-    inputs: { pool, holdings, caps, belief, params, effectiveProbabilityBps: probability, targetBps, bankroll },
-    impactC,
-    kellyC,
+    inputs: {
+      pool,
+      holdings,
+      caps,
+      belief,
+      params,
+      effectiveProbabilityBps: probability,
+      targetBps,
+      bankroll,
+    },
+    impactC: limits.impact,
+    kellyC: limits.kelly,
     limits,
     size,
-    binding: size < params.minTradeStroops ? "dust" : binding,
+    binding,
   };
-  if (size < params.minTradeStroops) return { report };
-  const [bought, other] = orient(pool, outcome);
+
+  if (size < params.minTradeStroops || size <= 0n) {
+    return { report: { ...report, binding: "dust" } };
+  }
+
+  const [bought, other] = orient(pool, "Yes");
   const quote = calcBuy(bought, other, size, pool.feeBps);
-  const priceAfterBps = priceAfterBuy(pool, outcome, size);
-  if (priceAfterBps === null) return { report };
-  const slippageFloor = (quote.sharesOut * (BPS - params.slippageBps)) / BPS;
-  const buy: SizedBuy = {
-    outcome,
-    collateralIn: size,
-    expectedShares: quote.sharesOut,
-    minSharesOut: slippageFloor > 0n ? slippageFloor : 1n,
-    priceAfterBps,
-    binding: report.binding,
+  const priceAfterBps = (quote.newReserveOther * BPS) / (quote.newReserveBought + quote.newReserveOther);
+  const minSharesOut = (quote.sharesOut * (BPS - params.slippageBps)) / BPS;
+
+  return {
+    buy: {
+      outcome: "Yes",
+      collateralIn: size,
+      minSharesOut,
+      expectedShares: quote.sharesOut,
+      priceAfterBps,
+      binding,
+      report,
+    },
     report,
   };
-  return { buy, report };
 }
 
-export function sizeBuy(
-  pool: PoolView,
-  holdings: Holdings,
+/**
+ * Records which portfolio-level factor constrained a proposed position.
+ * Exposed so callers can surface operational outcomes without re-deriving
+ * the binding factor from the report.
+ */
+export function describePortfolioConstraints(
   caps: CapsView,
-  belief: Belief,
-  params: SizingParams,
-): SizedBuy | undefined {
-  return sizeBuyDetailed(pool, holdings, caps, belief, params).buy;
-}
+  portfolio?: PortfolioView,
+): PortfolioConstraints {
+  const onChainHeadroom =
+    caps.maxMarket > caps.marketExposure ? caps.maxMarket - caps.marketExposure : 0n;
+  const exposureHeadroom = portfolio
+    ? portfolio.maxTotalExposure > portfolio.totalExposure
+      ? portfolio.maxTotalExposure - portfolio.totalExposure
+      : 0n
+    : null;
+  const availableCapital = portfolio ? portfolio.availableCapital : null;
 
-export function sizeSell(
-  pool: PoolView,
-  outcome: "Yes" | "No",
-  holdings: Holdings,
-  belief: Belief,
-  params: SizingParams,
-): SizedSell | undefined {
-  validateParams(params);
-  const { probability, currentPrice } = boundedBelief(pool, belief, outcome);
-  const target = probability + params.bufferBps > BPS ? BPS : probability + params.bufferBps;
-  const held = outcome === "Yes" ? holdings.yes : holdings.no;
-  if (currentPrice <= target || held <= 0n) return undefined;
-  const [sold, other] = orient(pool, outcome);
-  const quoteAt = (shares: bigint) => {
-    const collateral = collateralOutForShares(sold, other, shares, pool.feeBps);
-    const quote = calcSell(sold, other, collateral, pool.feeBps);
-    return {
-      collateral,
-      quote,
-      price: (quote.newReserveOther * BPS) / (quote.newReserveSold + quote.newReserveOther),
-    };
-  };
-  let low = 0n;
-  let high = held;
-  while (low < high) {
-    const mid = (low + high) / 2n;
-    try {
-      quoteAt(mid);
-      high = mid;
-    } catch (error) {
-      if (!(error instanceof MathError)) throw error;
-      low = mid + 1n;
-    }
+  let binding: Binding = "max_market";
+  let smallest = onChainHeadroom;
+  if (exposureHeadroom !== null && exposureHeadroom < smallest) {
+    smallest = exposureHeadroom;
+    binding = "portfolio";
   }
-  const firstTradable = low;
-  if (firstTradable > held) return undefined;
-  let first;
-  try {
-    first = quoteAt(firstTradable);
-  } catch (error) {
-    if (error instanceof MathError) return undefined;
-    throw error;
+  if (availableCapital !== null && availableCapital < smallest) {
+    smallest = availableCapital;
+    binding = "capital";
   }
-  if (first.price < target) return undefined;
-  low = firstTradable;
-  high = held;
-  while (low < high) {
-    const shares = (low + high + 1n) / 2n;
-    let price: bigint | null;
-    try {
-      price = quoteAt(shares).price;
-    } catch (error) {
-      if (!(error instanceof MathError)) throw error;
-      price = null;
-    }
-    if (price !== null && price >= target) low = shares;
-    else high = shares - 1n;
-  }
-  if (low === 0n) return undefined;
-  const { collateral: collateralOut, quote: verified } = quoteAt(low);
-  if (verified.sharesIn > low || verified.sharesIn > held) {
-    throw new Error("sell quote exceeded its share bound");
-  }
-  const priceAfterBps = (verified.newReserveOther * BPS) / (verified.newReserveSold + verified.newReserveOther);
-  return {
-    outcome,
-    collateralOut,
-    maxSharesIn: verified.sharesIn,
-    expectedSharesIn: verified.sharesIn,
-    priceAfterBps,
-  };
-}
-
-function max0(value: bigint): bigint {
-  return value > 0n ? value : 0n;
-}
-
-function minBigInt(...values: bigint[]): bigint {
-  return values.reduce((min, value) => value < min ? value : min);
+  return { exposureHeadroom, availableCapital, onChainHeadroom, binding };
 }

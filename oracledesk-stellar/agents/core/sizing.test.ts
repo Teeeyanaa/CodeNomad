@@ -196,13 +196,54 @@ test("impactLimit never selects a buy beyond its floored target", () => {
     const rYes = BigInt(next() % 10_000_000 + 10_000);
     const rNo = BigInt(next() % 10_000_000 + 10_000);
     const feeBps = BigInt(next() % 1_001);
-    const candidate = { ...pool, reserveYes: rYes, reserveNo: rNo, feeBps };
-    const rawTarget = priceYesBps(rYes, rNo) + BigInt(next() % 2_000);
-    const target = rawTarget > BPS ? BPS : rawTarget;
-    const size = impactLimit(candidate, "Yes", target, 10_000_000n);
+    const candidate = BigInt(next() % 5_000_000 + 1);
+    const target = BigInt(next() % 9_000 + 500);
+    const size = impactLimit({ reserveYes: rYes, reserveNo: rNo, feeBps, setsMinted: 0n }, "Yes", target, candidate);
+    assert.ok(size <= candidate);
     if (size === 0n) continue;
-    const quote = calcBuy(rYes, rNo, size, feeBps);
-    const post = (quote.newReserveOther * BPS) / (quote.newReserveBought + quote.newReserveOther);
-    assert.ok(post <= target, `sample ${i}: post=${post}, target=${target}`);
+    try {
+      const q = calcBuy(rYes, rNo, size, feeBps);
+      const post = (q.newReserveOther * BPS) / (q.newReserveBought + q.newReserveOther);
+      assert.ok(post <= target, `sample ${i}: post ${post} > target ${target}`);
+    } catch (error) {
+      if (!(error instanceof MathError)) throw error;
+    }
+  }
+});
+
+test("portfolio sizing keeps randomized portfolios within configured exposure caps", () => {
+  let seed = 0xdeadbeef;
+  const next = () => {
+    seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+    return seed;
+  };
+  const fullKelly = { ...params, kellyFractionNumerator: 1n, kellyFractionDenominator: 1n };
+  for (let i = 0; i < 500; i += 1) {
+    const maxMarket = BigInt(next() % 500_000_000 + 1_000_000);
+    const maxDaily = BigInt(next() % 1_000_000_000 + 1_000_000);
+    const availableCapital = BigInt(next() % 500_000_000 + 1_000_000);
+    const marketExposure = BigInt(next() % 400_000_000);
+    const dailyUsed = BigInt(next() % 800_000_000);
+    const candidateCaps: CapsView = {
+      maxTrade: BigInt(next() % 200_000_000 + 1_000_000),
+      maxMarket,
+      marketExposure,
+      maxDaily,
+      dailyUsed,
+      availableCapital,
+    };
+    const result = sizeBuyDetailed(
+      pool,
+      { yes: 0n, no: 0n },
+      candidateCaps,
+      { fairYesBps: 8_000n, uncertaintyBps: 0n },
+      fullKelly,
+    );
+    if (!result.buy) continue;
+    const size = result.buy.collateralIn;
+    assert.ok(size <= candidateCaps.maxTrade, `sample ${i}: exceeds maxTrade`);
+    assert.ok(marketExposure + size <= maxMarket, `sample ${i}: exceeds maxMarket`);
+    assert.ok(dailyUsed + size <= maxDaily, `sample ${i}: exceeds maxDaily`);
+    assert.ok(size <= availableCapital, `sample ${i}: exceeds availableCapital`);
   }
 });

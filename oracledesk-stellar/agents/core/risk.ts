@@ -234,6 +234,8 @@ export interface TournamentResult {
   ranking: VariantReport[];
 }
 
+const UNKNOWN_GROUP_ID = "unknown";
+
 /**
  * Error thrown when variants are not evaluated on an identical seed set.
  * Unpaired comparisons are rejected so rankings are never computed across
@@ -437,3 +439,20 @@ export function runTournament(
 
   return { seedIds, ranking };
 }
+
+export interface AgentRiskState {
+  now: bigint;
+  global: {
+    maxTrade: bigint;
+    maxMarket: bigint;
+    maxDaily: bigint;
+    maxNetExposure: bigint;
+  };
+  agent: AgentRiskPolicy;
+  usage: {
+    global: AgentUsageWindow;
+    agent: AgentUsageWindow;
+  };
+  /** Treasury's current token balance before a possible yield withdrawa
+
+/* … truncated 7739 chars — edit only what you need near the top … */

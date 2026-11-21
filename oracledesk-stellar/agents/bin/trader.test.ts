@@ -157,3 +157,69 @@ describe("trader chaos: ambiguous transaction outcomes", () => {
     expect(submits).toBe(1);
   });
 });
+
+describe("trader cost-aware edge thresholds", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "trader-cost-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects a trade whose conservative net edge is non-positive", async () => {
+    const ledger = makeLedger(dir);
+    let submits = 0;
+    const agent = new TraderAgent({
+      ledger,
+      submit: async (): Promise<SubmitResult> => {
+        submits += 1;
+        return { hash: "tx-cost-reject" };
+      },
+      read: async () => ({ status: "success" }),
+    });
+
+    // Gross edge is positive but fees + impact + slippage consume it entirely.
+    const intent = {
+      id: "intent-cost-1",
+      action: "swap",
+      amount: "10",
+      expectedEdge: "0.004",
+      costs: { fees: "0.002", impact: "0.001", slippage: "0.001" },
+    };
+    await expect(agent.execute(intent)).rejects.toThrow(/edge/i);
+    expect(submits).toBe(0);
+  });
+
+  it("accepts a trade with positive conservative net edge and records the cost breakdown", async () => {
+    const ledger = makeLedger(dir);
+    let submits = 0;
+    const agent = new TraderAgent({
+      ledger,
+      submit: async (): Promise<SubmitResult> => {
+        submits += 1;
+        return { hash: "tx-cost-accept" };
+      },
+      read: async () => ({ status: "success" }),
+    });
+
+    const intent = {
+      id: "intent-cost-2",
+      action: "swap",
+      amount: "10",
+      expectedEdge: "0.01",
+      costs: { fees: "0.002", impact: "0.001", slippage: "0.001" },
+    };
+    await agent.execute(intent);
+    expect(submits).toBe(1);
+
+    const state = ledger.load() as {
+      intents: Record<string, { status: string; trace?: { costs?: Record<string, string>; netEdge?: string } }>;
+    };
+    const trace = state.intents["intent-cost-2"].trace;
+    expect(trace?.costs).toEqual({ fees: "0.002", impact: "0.001", slippage: "0.001" });
+    expect(trace?.netEdge).toBe("0.006");
+  });
+});

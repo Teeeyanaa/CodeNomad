@@ -18,6 +18,21 @@ import type {
   TraceRecord,
   TraceRepository,
 } from "./trace-api.js";
+import type { TraceVerdict } from "./trace-verification.js";
+
+/**
+ * On-chain action: either a plain string (unchained legacy) or a tagged-union
+ * variant from the Soroban binding (e.g. `{ tag: "Buy", values: undefined }`).
+ */
+export type RegistryAction =
+  | string
+  | { tag: string; values: unknown };
+
+/** Normalises a contract action value to a lowercase string for API consumers. */
+function normalizeAction(action: RegistryAction): string {
+  if (typeof action === "string") return action.toLowerCase();
+  return action.tag.toLowerCase().replace(/_/g, "_");
+}
 
 export interface RegistryTrace {
   market_id: bigint;
@@ -53,6 +68,11 @@ export interface RegistryTraceReader {
     start: bigint;
     limit: number;
   }): Promise<{ result: RegistryTracePage }>;
+  /** Optional: returns the contract-computed verdict for a trace hash. */
+  trace_verdict?(args: {
+    trace_id: bigint;
+    received_hash: Buffer;
+  }): Promise<{ result: TraceVerdict }>;
 }
 
 const DEFAULT_PAGE_LIMIT = 25;

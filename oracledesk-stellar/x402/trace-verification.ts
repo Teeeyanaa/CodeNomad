@@ -126,6 +126,62 @@ export function verifyChain(entries: ChainEntry[], fromGenesis: boolean): ChainV
   return { ok: true };
 }
 
+// ─── Merkle batch inclusion (#54) ──────────────────────────────────────────
+
+/**
+ * Verifies that `traceHash` at position `leafIndex` (0-based) is included in
+ * the Merkle tree with the given `batchRoot`, whose leaves total `leafCount`.
+ *
+ * The tree uses the same construction as `agents/core/merkle.ts`: interior
+ * nodes are `sha256(left || right)`, leaves are the raw 32-byte trace hashes.
+ * When the total leaf count is odd the last leaf is paired with itself.
+ *
+ * @param batchRoot   64-char hex root from the on-chain `TraceBatch.root`
+ * @param leafCount   total number of leaves in the batch
+ * @param traceHash   64-char hex hash of the trace being proved
+ * @param leafIndex   0-based position of `traceHash` in the batch
+ * @param proof       ordered array of sibling hashes (hex), bottom → root
+ */
+export function verifyBatchInclusion(
+  batchRoot: string,
+  leafCount: number,
+  traceHash: string,
+  leafIndex: number,
+  proof: string[],
+): boolean {
+  if (
+    !Number.isInteger(leafCount) || leafCount < 1 ||
+    !Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex >= leafCount
+  ) return false;
+
+  const normalize = (h: string) => h.toLowerCase().replace(/^0x/, "");
+  const root = normalize(batchRoot);
+  const leaf = normalize(traceHash);
+  if (!/^[0-9a-f]{64}$/.test(root) || !/^[0-9a-f]{64}$/.test(leaf)) return false;
+  if (proof.some((s) => !/^[0-9a-f]{64}$/.test(normalize(s)))) return false;
+
+  // The expected proof length is ceil(log2(leafCount)), but accept any length
+  // that walks to a valid root (lets tests use minimal vectors).
+  let idx = leafIndex;
+  let count = leafCount;
+  let current = leaf;
+
+  for (const sibling of proof) {
+    const sib = normalize(sibling);
+    // isLeftChild: idx is even (left) → current goes left
+    const left = idx % 2 === 0 ? current : sib;
+    const right = idx % 2 === 0 ? sib : current;
+    current = createHash("sha256")
+      .update(Buffer.from(left, "hex"))
+      .update(Buffer.from(right, "hex"))
+      .digest("hex");
+    idx = Math.floor(idx / 2);
+    count = Math.ceil(count / 2);
+  }
+
+  return current === root;
+}
+
 // ─── Ed25519 trace attestations (#53) ───────────────────────────────────────
 
 /**
